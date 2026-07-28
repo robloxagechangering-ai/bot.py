@@ -447,7 +447,6 @@ async def add_to_cart_callback(call: CallbackQuery):
     success, msg = add_to_cart(user_id, item)
     await call.answer(msg, show_alert=True)
     if success:
-        # Возвращаемся в категорию
         await back_to_category(call)
 
 @dp.callback_query(F.data.startswith("del_"))
@@ -476,7 +475,6 @@ async def checkout_callback(call: CallbackQuery):
     total = get_cart_total(cart)
     items_text = "\n".join([f"{i+1}. {item} - {PRICES.get(item, 0)} руб" for i, item in enumerate(cart)])
 
-    # Сохраняем заказ в БД
     cur.execute("""
         INSERT INTO orders (user_id, items, total, created_at)
         VALUES (?, ?, ?, ?)
@@ -493,18 +491,18 @@ async def checkout_callback(call: CallbackQuery):
 
 💳 Для оплаты используйте способы из раздела «Как оплатить заказ»
 
-⏱ Ожидайте выдачи (5-30 минут)"""
+⏱ Ожидайте выдачи (5-30 минут)
+
+📩 Свяжитесь с продавцом: @goIanrexxx"""
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
     await call.message.edit_text(text, reply_markup=builder.as_markup())
     await call.answer()
 
-    # Уведомление админу
     for admin_id in ADMIN_IDS:
         await bot.send_message(admin_id, f"🆕 НОВЫЙ ЗАКАЗ #{order_id}\nПользователь: {call.from_user.id}\nТовары: {items_text}\nИтого: {total} руб")
 
-    # Очищаем корзину
     save_cart(user_id, [])
 
 # ==================================================

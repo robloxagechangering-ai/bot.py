@@ -15,8 +15,8 @@ from aiohttp import web
 # ==================================================
 # НАСТРОЙКИ
 # ==================================================
-BOT_TOKEN = "ТВОЙ_ТОКЕН"
-ADMIN_IDS = [123456789]  # Твой Telegram ID
+BOT_TOKEN = "8800653190:AAEEqe2c-72684E-5EmIgFSS1WdbGGSsukE"
+ADMIN_IDS = [8625870625]  # Твой Telegram ID
 PORT = int(os.environ.get("PORT", 8080))
 
 logging.basicConfig(level=logging.INFO)

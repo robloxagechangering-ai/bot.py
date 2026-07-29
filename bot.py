@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder  # <--- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ==================================================
 # НАСТРОЙКИ
@@ -23,7 +23,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 # ==================================================
-# БАЗА ДАННЫХ (ОПТИМИЗИРОВАННАЯ)
+# БАЗА ДАННЫХ
 # ==================================================
 conn = sqlite3.connect("shop.db", check_same_thread=False, timeout=5)
 cur = conn.cursor()
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS orders (
 conn.commit()
 
 # ==================================================
-# КЕШ КОРЗИН (ДЛЯ БЫСТРОТЫ)
+# КЕШ КОРЗИН
 # ==================================================
 cart_cache = {}
 

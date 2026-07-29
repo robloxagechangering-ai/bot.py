@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder  # ЭТО БЫЛО ПРОПУЩЕНО
+from aiogram.utils.keyboard import InlineKeyboardBuilder  # <--- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
 
 # ==================================================
 # НАСТРОЙКИ

@@ -1,16 +1,12 @@
+import os
 import asyncio
 import logging
 import sqlite3
-import os
-from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # ==================================================
 # НАСТРОЙКИ
@@ -25,9 +21,9 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 # ==================================================
-# БАЗА ДАННЫХ
+# БАЗА ДАННЫХ (ОПТИМИЗИРОВАННАЯ)
 # ==================================================
-conn = sqlite3.connect("shop.db", check_same_thread=False, timeout=10)
+conn = sqlite3.connect("shop.db", check_same_thread=False, timeout=5)
 cur = conn.cursor()
 
 cur.execute("""
@@ -47,39 +43,31 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TEXT
 )
 """)
-
 conn.commit()
 
 # ==================================================
-# КЕШ КОРЗИН
+# КЕШ КОРЗИН (ДЛЯ БЫСТРОТЫ)
 # ==================================================
 cart_cache = {}
 
 def get_cart(user_id):
     if user_id in cart_cache:
         return cart_cache[user_id]
-    try:
-        cur.execute("SELECT cart FROM users WHERE user_id = ?", (user_id,))
-        result = cur.fetchone()
-        if result:
-            cart = eval(result[0])
-        else:
-            cart = []
-            cur.execute("INSERT INTO users (user_id, cart) VALUES (?, ?)", (user_id, "[]"))
-            conn.commit()
-        cart_cache[user_id] = cart
-        return cart
-    except Exception as e:
-        logging.error(f"Ошибка получения корзины: {e}")
-        return []
+    cur.execute("SELECT cart FROM users WHERE user_id = ?", (user_id,))
+    result = cur.fetchone()
+    if result:
+        cart = eval(result[0])
+    else:
+        cart = []
+        cur.execute("INSERT INTO users (user_id, cart) VALUES (?, ?)", (user_id, "[]"))
+        conn.commit()
+    cart_cache[user_id] = cart
+    return cart
 
 def save_cart(user_id, cart):
     cart_cache[user_id] = cart
-    try:
-        cur.execute("UPDATE users SET cart = ? WHERE user_id = ?", (str(cart), user_id))
-        conn.commit()
-    except Exception as e:
-        logging.error(f"Ошибка сохранения корзины: {e}")
+    cur.execute("UPDATE users SET cart = ? WHERE user_id = ?", (str(cart), user_id))
+    conn.commit()
 
 def add_to_cart(user_id, item):
     cart = get_cart(user_id)
@@ -174,49 +162,40 @@ def shop_menu():
     builder.row(InlineKeyboardButton(text="🌸 Godlies", callback_data="category_godlies"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
     return builder.as_markup()
-    # ==================================================
-# ОБРАБОТЧИКИ (с обработкой ошибок)
+
+# ==================================================
+# ОБРАБОТЧИКИ
 # ==================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    try:
-        user_id = message.from_user.id
-        get_cart(user_id)
-        text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
+    get_cart(message.from_user.id)
+    text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
 
 NOVASS SHOP 🛍️ ЗДЕСЬ МОЖНО
 КУПИТЬ КРУТЫЕ СКИНЫ 💎 ИЗ ИГРЫ
 🩸 MURDER MYSTERY 2 😎
 
 Чтобы посмотреть цены и другие вещи в нашем магазине нажмите на кнопки 👇"""
-        await message.answer(text, reply_markup=main_menu())
-    except Exception as e:
-        logging.error(f"Ошибка в /start: {e}")
-        await message.answer("Произошла ошибка, попробуйте позже")
+    await message.answer(text, reply_markup=main_menu())
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(call: CallbackQuery):
-    try:
-        text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
+    text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
 
 NOVASS SHOP 🛍️ ЗДЕСЬ МОЖНО
 КУПИТЬ КРУТЫЕ СКИНЫ 💎 ИЗ ИГРЫ
 🩸 MURDER MYSTERY 2 😎
 
 Чтобы посмотреть цены и другие вещи в нашем магазине нажмите на кнопки 👇"""
-        await call.message.edit_text(text, reply_markup=main_menu())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в main_menu: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    await call.message.edit_text(text, reply_markup=main_menu())
+    await call.answer()
 
 # ==================================================
 # 1. КАК ОПЛАТИТЬ
 # ==================================================
 @dp.callback_query(F.data == "how_to_pay")
 async def how_to_pay(call: CallbackQuery):
-    try:
-        text = """💳 Как оплатить заказ?
+    text = """💳 Как оплатить заказ?
 
 Мы работаем по всему миру — без привязки к странам, банкам и дурацким картам.
 Покупать карты для каждой страны — дорого, геморройно и невыгодно.
@@ -266,291 +245,240 @@ async def how_to_pay(call: CallbackQuery):
 7. Когда продавец назовёт сумму — выбери «Подарить звёзды»
 8. Введи его юзернейм и отправь звёзды
 9. После этого начинается сделка ✅"""
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-        await call.message.edit_text(text, reply_markup=builder.as_markup())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в how_to_pay: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
 # ==================================================
 # 2. МАГАЗИН
 # ==================================================
 @dp.callback_query(F.data == "shop")
 async def shop_callback(call: CallbackQuery):
-    try:
-        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в shop: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
+    await call.answer()
 
 @dp.callback_query(F.data == "back_to_shop")
 async def back_to_shop(call: CallbackQuery):
-    try:
-        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в back_to_shop: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("category_"))
 async def category_callback(call: CallbackQuery):
-    try:
-        parts = call.data.split("_")
-        category = parts[1]
-        page = int(parts[3]) if len(parts) > 3 else 1
+    category = call.data.split("_")[1]
+    page = 1
+    if "_page_" in call.data:
+        category = call.data.split("_")[1]
+        page = int(call.data.split("_")[3])
 
-        items = CATEGORIES.get(category, [])
-        items_per_page = 15
-        total_pages = (len(items) + items_per_page - 1) // items_per_page
-        start = (page - 1) * items_per_page
-        end = start + items_per_page
-        page_items = items[start:end]
+    items = CATEGORIES.get(category, [])
+    items_per_page = 15
+    total_pages = (len(items) + items_per_page - 1) // items_per_page
+    start = (page - 1) * items_per_page
+    end = start + items_per_page
+    page_items = items[start:end]
 
-        titles = {"sets": "🏹 Сеты:", "ancients": "📜 Ancients:", "chromas": "🌈 Chromas:", "godlies": "🌸 Godlies:"}
-        title = titles.get(category, "Выберите:")
+    titles = {"sets": "🏹 Сеты:", "ancients": "📜 Ancients:", "chromas": "🌈 Chromas:", "godlies": "🌸 Godlies:"}
+    title = titles.get(category, "Выберите:")
 
-        builder = InlineKeyboardBuilder()
-        for item in page_items:
-            builder.row(InlineKeyboardButton(text=f"{item} - {PRICES.get(item, 0)} руб", callback_data=f"view_{item}"))
-        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
-        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
+    builder = InlineKeyboardBuilder()
+    for item in page_items:
+        builder.row(InlineKeyboardButton(text=f"{item} - {PRICES.get(item, 0)} руб", callback_data=f"view_{item}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
+    builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
 
-        if total_pages > 1:
-            nav = []
-            if page > 1: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"category_{category}_page_{page-1}"))
-            nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
-            if page < total_pages: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"category_{category}_page_{page+1}"))
-            builder.row(*nav)
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"category_{category}_page_{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton(text="➡️", callback_data=f"category_{category}_page_{page+1}"))
+        builder.row(*nav)
 
-        await call.message.edit_text(title, reply_markup=builder.as_markup())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в category: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    await call.message.edit_text(title, reply_markup=builder.as_markup())
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("view_"))
 async def view_item(call: CallbackQuery):
-    try:
-        item = call.data.replace("view_", "")
-        price = PRICES.get(item, 0)
-        text = f"""✅ Вы уверены, что хотите выбрать?
+    item = call.data.replace("view_", "")
+    price = PRICES.get(item, 0)
+    text = f"""✅ Вы уверены, что хотите выбрать?
 
 Название: {item}
 Цена: {price} руб
-В наличии: 1 шт"""
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{item}"))
-        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
-        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
-        await call.message.edit_text(text, reply_markup=builder.as_markup())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в view_item: {e}")
-        await call.answer("Ошибка", show_alert=True)
+В наличии: 1 шт
+
+Выберите действие:"""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{item}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_category"))
+    builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
 @dp.callback_query(F.data == "back_to_category")
 async def back_to_category(call: CallbackQuery):
-    try:
-        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в back_to_category: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
+    await call.answer()
 
 # ==================================================
 # 3. О МАГАЗИНЕ
 # ==================================================
 @dp.callback_query(F.data == "about")
 async def about_callback(call: CallbackQuery):
-    try:
-        text = """👋 Добро пожаловать в NOVA SHOP MM2
+    text = """👋 Добро пожаловать в NOVA SHOP MM2
 
 ✅ 200-500 положительных отзывов
 ⏱ Выдача 5-30 минут
 💰 Самые дешёвые цены"""
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-        await call.message.edit_text(text, reply_markup=builder.as_markup())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в about: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
 # ==================================================
 # 4. ПОДДЕРЖКА
 # ==================================================
 @dp.callback_query(F.data == "support")
 async def support_callback(call: CallbackQuery):
-    try:
-        text = """✍️ Поддержка: @NovasHelper
+    text = """✍️ Поддержка: @NovasHelper
 
 Быстрый ответ на все вопросы."""
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-        await call.message.edit_text(text, reply_markup=builder.as_markup())
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в support: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
 # ==================================================
 # 5. КОРЗИНА
 # ==================================================
 @dp.callback_query(F.data == "cart")
 async def cart_callback(call: CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        cart = get_cart(user_id)
-        if not cart:
-            text = "🛒 Ваша корзина пуста"
-            builder = InlineKeyboardBuilder()
-            builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-            await call.message.edit_text(text, reply_markup=builder.as_markup())
-            await call.answer()
-            return
-
-        text = "🛒 КОРЗИНА (лимит 25)\n\n"
-        total = 0
-        for i, item in enumerate(cart, 1):
-            price = PRICES.get(item, 0)
-            total += price
-            text += f"{i}. {item} - {price} руб\n"
-        text += f"\n💰 ИТОГО: {total} руб"
-
+    user_id = call.from_user.id
+    cart = get_cart(user_id)
+    if not cart:
+        text = "🛒 Ваша корзина пуста"
         builder = InlineKeyboardBuilder()
-        for i in range(1, min(len(cart) + 1, 26)):
-            builder.row(InlineKeyboardButton(text=f"❌ Удалить {i}", callback_data=f"del_{i}"))
-        builder.row(InlineKeyboardButton(text="✅ Оформить", callback_data="checkout"))
-        builder.row(InlineKeyboardButton(text="🔄 Очистить", callback_data="clear_cart"))
         builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
         await call.message.edit_text(text, reply_markup=builder.as_markup())
         await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка в cart: {e}")
-        await call.answer("Ошибка", show_alert=True)
+        return
+
+    text = "🛒 КОРЗИНА (лимит 25)\n\n"
+    total = 0
+    for i, item in enumerate(cart, 1):
+        price = PRICES.get(item, 0)
+        total += price
+        text += f"{i}. {item} - {price} руб\n"
+    text += f"\n💰 ИТОГО: {total} руб"
+
+    builder = InlineKeyboardBuilder()
+    for i in range(1, min(len(cart) + 1, 26)):
+        builder.row(InlineKeyboardButton(text=f"❌ Удалить {i}", callback_data=f"del_{i}"))
+    builder.row(InlineKeyboardButton(text="✅ Оформить", callback_data="checkout"))
+    builder.row(InlineKeyboardButton(text="🔄 Очистить", callback_data="clear_cart"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("add_"))
 async def add_to_cart_callback(call: CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        item = call.data.replace("add_", "")
-        success, msg = add_to_cart(user_id, item)
-        await call.answer(msg, show_alert=True)
-        if success:
-            await shop_callback(call)
-    except Exception as e:
-        logging.error(f"Ошибка в add_to_cart: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    user_id = call.from_user.id
+    item = call.data.replace("add_", "")
+    success, msg = add_to_cart(user_id, item)
+    await call.answer(msg, show_alert=True)
+    if success:
+        await back_to_shop(call)
 
 @dp.callback_query(F.data.startswith("del_"))
 async def remove_from_cart_callback(call: CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        index = int(call.data.replace("del_", ""))
-        success, msg = remove_from_cart(user_id, index)
-        await call.answer(msg, show_alert=True)
-        await cart_callback(call)
-    except Exception as e:
-        logging.error(f"Ошибка в remove_from_cart: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    user_id = call.from_user.id
+    index = int(call.data.replace("del_", ""))
+    success, msg = remove_from_cart(user_id, index)
+    await call.answer(msg, show_alert=True)
+    await cart_callback(call)
 
 @dp.callback_query(F.data == "clear_cart")
 async def clear_cart_callback(call: CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        save_cart(user_id, [])
-        await call.answer("Корзина очищена", show_alert=True)
-        await cart_callback(call)
-    except Exception as e:
-        logging.error(f"Ошибка в clear_cart: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    user_id = call.from_user.id
+    save_cart(user_id, [])
+    await call.answer("Корзина очищена", show_alert=True)
+    await cart_callback(call)
 
 @dp.callback_query(F.data == "checkout")
 async def checkout_callback(call: CallbackQuery):
-    try:
-        user_id = call.from_user.id
-        cart = get_cart(user_id)
-        if not cart:
-            await call.answer("Корзина пуста", show_alert=True)
-            return
+    user_id = call.from_user.id
+    cart = get_cart(user_id)
+    if not cart:
+        await call.answer("Корзина пуста", show_alert=True)
+        return
 
-        total = get_cart_total(cart)
-        items_text = "\n".join([f"{i+1}. {item} - {PRICES.get(item, 0)} руб" for i, item in enumerate(cart)])
+    total = get_cart_total(cart)
+    items_text = "\n".join([f"{i+1}. {item} - {PRICES.get(item, 0)} руб" for i, item in enumerate(cart)])
 
-        cur.execute("""INSERT INTO orders (user_id, items, total, created_at) VALUES (?, ?, ?, ?)""",
-                    (user_id, str(cart), total, datetime.now().isoformat()))
-        conn.commit()
-        order_id = cur.lastrowid
+    cur.execute("""
+        INSERT INTO orders (user_id, items, total, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (user_id, str(cart), total, datetime.now().isoformat()))
+    conn.commit()
+    order_id = cur.lastrowid
 
-        text = f"""✅ ЗАКАЗ #{order_id} ОФОРМЛЕН!
+    text = f"""✅ ЗАКАЗ #{order_id} ОФОРМЛЕН!
 
 Ваши товары:
 {items_text}
 
 💰 ИТОГО: {total} руб
 
-💳 Оплата: USDT или Stars (см. «Как оплатить»)
+💳 Для оплаты используйте способы из раздела «Как оплатить заказ»
 
-⏱ Выдача 5-30 минут
+⏱ Ожидайте выдачи (5-30 минут)
 
-📩 Связь: @goIanrexxx"""
+📩 Свяжитесь с продавцом: @goIanrexxx"""
 
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
-        await call.message.edit_text(text, reply_markup=builder.as_markup())
-        await call.answer()
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
+    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    await call.answer()
 
-        for admin_id in ADMIN_IDS:
-            await bot.send_message(admin_id, f"🆕 ЗАКАЗ #{order_id}\nUser: {call.from_user.id}\n{items_text}\nИтого: {total} руб")
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, f"🆕 НОВЫЙ ЗАКАЗ #{order_id}\nПользователь: {call.from_user.id}\nТовары: {items_text}\nИтого: {total} руб")
 
-        save_cart(user_id, [])
-    except Exception as e:
-        logging.error(f"Ошибка в checkout: {e}")
-        await call.answer("Ошибка", show_alert=True)
+    save_cart(user_id, [])
 
 # ==================================================
 # АДМИН-КОМАНДЫ
 # ==================================================
 @dp.message(Command("orders"))
 async def cmd_orders(message: Message):
-    try:
-        if message.from_user.id not in ADMIN_IDS:
-            await message.answer("⛔ Нет прав")
-            return
-        cur.execute("SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC")
-        orders = cur.fetchall()
-        if not orders:
-            await message.answer("Нет активных заказов")
-            return
-        text = "📋 АКТИВНЫЕ ЗАКАЗЫ:\n\n"
-        for order in orders:
-            order_id, user_id, items, total, status, created = order
-            text += f"#{order_id} | {user_id} | {total} руб | {created[:16]}\n"
-        await message.answer(text)
-    except Exception as e:
-        logging.error(f"Ошибка в orders: {e}")
-        await message.answer("Ошибка при получении заказов")
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    cur.execute("SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC")
+    orders = cur.fetchall()
+    if not orders:
+        await message.answer("Нет активных заказов")
+        return
+    text = "📋 АКТИВНЫЕ ЗАКАЗЫ:\n\n"
+    for order in orders:
+        order_id, user_id, items, total, status, created = order
+        text += f"#{order_id} | {user_id} | {total} руб | {created[:16]}\n"
+    await message.answer(text)
 
 @dp.message(Command("done"))
 async def cmd_done(message: Message):
-    try:
-        if message.from_user.id not in ADMIN_IDS:
-            await message.answer("⛔ Нет прав")
-            return
-        args = message.text.split()
-        if len(args) < 2:
-            await message.answer("Используйте: /done <order_id>")
-            return
-        order_id = args[1]
-        cur.execute("UPDATE orders SET status = 'completed' WHERE order_id = ?", (order_id,))
-        conn.commit()
-        await message.answer(f"✅ Заказ #{order_id} выполнен")
-    except Exception as e:
-        logging.error(f"Ошибка в done: {e}")
-        await message.answer("Ошибка при выполнении заказа")
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Используйте: /done <order_id>")
+        return
+    order_id = args[1]
+    cur.execute("UPDATE orders SET status = 'completed' WHERE order_id = ?", (order_id,))
+    conn.commit()
+    await message.answer(f"✅ Заказ #{order_id} выполнен")
 
 # ==================================================
 # ВЕБ-СЕРВЕР (UptimeRobot)
@@ -569,7 +497,6 @@ async def start_web_server():
 # ЗАПУСК (с авто-перезапуском)
 # ==================================================
 async def main():
-    logging.basicConfig(level=logging.WARNING)
     while True:
         try:
             await bot.delete_webhook(drop_pending_updates=True)

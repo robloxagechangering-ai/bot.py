@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ==================================================
 # НАСТРОЙКИ
 # ==================================================
-BOT_TOKEN = "7946724552:AAHLQfvrJxw5QFjIEB3XFRPUoBD9_0gT2rw"  # ← твой токен (лучше вынести в ENV)
+BOT_TOKEN = "7946724552:AAGbTOLi_6E3cYHvvfH-PtK9Nk_7qZgSnYU"  # ← твой токен (лучше вынести в ENV)
 ADMIN_IDS = [8625870625]
 PORT = int(os.environ.get("PORT", 8080))
 

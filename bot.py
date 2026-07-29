@@ -13,27 +13,27 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 # ==================================================
-# НАСТРОЙКИ
+# НАСТРОЙКИ (оптимизированные)
 # ==================================================
 BOT_TOKEN = "8800653190:AAEEqe2c-72684E-5EmIgFSS1WdbGGSsukE"
-ADMIN_IDS = [8625870625]  # Твой Telegram ID
+ADMIN_IDS = [8625870625]
 PORT = int(os.environ.get("PORT", 8080))
 
-logging.basicConfig(level=logging.INFO)
+# Отключаем ненужные логи для экономии памяти
+logging.basicConfig(level=logging.WARNING)
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 # ==================================================
-# БАЗА ДАННЫХ
+# БАЗА ДАННЫХ (с защитой от блокировок)
 # ==================================================
-conn = sqlite3.connect("shop.db", check_same_thread=False)
+conn = sqlite3.connect("shop.db", check_same_thread=False, timeout=10)
 cur = conn.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    username TEXT,
     cart TEXT DEFAULT '[]'
 )
 """)
@@ -52,10 +52,66 @@ CREATE TABLE IF NOT EXISTS orders (
 conn.commit()
 
 # ==================================================
+# КЕШ КОРЗИН (чтобы не ходить в БД каждый раз)
+# ==================================================
+cart_cache = {}
+
+def get_cart(user_id):
+    """Получить корзину пользователя (с кешем)"""
+    if user_id in cart_cache:
+        return cart_cache[user_id]
+    try:
+        cur.execute("SELECT cart FROM users WHERE user_id = ?", (user_id,))
+        result = cur.fetchone()
+        if result:
+            cart = eval(result[0])
+        else:
+            cart = []
+            cur.execute("INSERT INTO users (user_id, cart) VALUES (?, ?)", (user_id, "[]"))
+            conn.commit()
+        cart_cache[user_id] = cart
+        return cart
+    except Exception as e:
+        logging.error(f"Ошибка получения корзины: {e}")
+        return []
+
+def save_cart(user_id, cart):
+    """Сохранить корзину пользователя"""
+    cart_cache[user_id] = cart
+    try:
+        cur.execute("UPDATE users SET cart = ? WHERE user_id = ?", (str(cart), user_id))
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Ошибка сохранения корзины: {e}")
+
+def add_to_cart(user_id, item):
+    """Добавить товар в корзину"""
+    cart = get_cart(user_id)
+    if len(cart) >= 25:
+        return False, "Корзина заполнена (максимум 25 товаров)"
+    if item in cart:
+        return False, "Этот товар уже в корзине"
+    cart.append(item)
+    save_cart(user_id, cart)
+    return True, f"{item} добавлен в корзину!"
+
+def remove_from_cart(user_id, index):
+    """Удалить товар из корзины по номеру"""
+    cart = get_cart(user_id)
+    if 1 <= index <= len(cart):
+        removed = cart.pop(index - 1)
+        save_cart(user_id, cart)
+        return True, f"{removed} удалён из корзины"
+    return False, "Неверный номер товара"
+
+def get_cart_total(cart):
+    """Подсчитать общую стоимость корзины"""
+    return sum(PRICES.get(item, 0) for item in cart)
+
+# ==================================================
 # ЦЕНЫ И КАТЕГОРИИ
 # ==================================================
 PRICES = {
-    # SETS
     "Celestial Set": 1650, "Alien set": 1450, "Sakura set": 1250,
     "Sun set": 1200, "Snow set": 1100, "Bauble set": 550,
     "Bloom set": 750, "Ocean set": 700, "Xeno set": 650,
@@ -63,16 +119,13 @@ PRICES = {
     "Bat set": 150, "Beach Set": 500, "Borealis set": 150,
     "Ice set": 350, "Candy set": 400, "Spectre set": 150,
     "Blizzard set": 700, "Full Elderwood set": 200,
-    # ANCIENTS
     "Celestial": 750, "Vampire's Axe": 550, "Harvester": 175,
     "Icepiercer": 150, "Icebreaker": 85, "Icewing": 25,
-    # CHROMAS
     "Chroma Heart Wand": 1450, "Chroma Watergun": 1150,
     "Chroma Sweet": 900, "Chroma Treat": 900, "Chroma Beachy": 950,
     "Chroma Sands": 950, "Chroma Ornament": 750,
     "Chroma DarkBringer": 100, "Chroma LightBringer": 100,
     "Chroma Luger": 85, "Chroma Laser": 80, "Chroma Swirly Gun": 75,
-    # GODLIES
     "Constellation": 700, "Turkey": 700, "Alien Beam": 675,
     "DarkShot": 630, "DarkSword": 600, "RayGun": 700,
     "Blossom": 700, "Sakura": 590, "SnowCannon": 500,
@@ -89,7 +142,6 @@ PRICES = {
     "Luger": 50, "RedLuger": 50
 }
 
-# КАТЕГОРИИ ТОВАРОВ
 CATEGORIES = {
     "sets": ["Celestial Set", "Alien set", "Sakura set", "Sun set", "Snow set",
              "Bauble set", "Bloom set", "Ocean set", "Xeno set", "FlowerWood set",
@@ -109,460 +161,343 @@ CATEGORIES = {
 }
 
 # ==================================================
-# КЛАССЫ СОСТОЯНИЙ
-# ==================================================
-class ShopStates(StatesGroup):
-    viewing_item = State()
-
-# ==================================================
-# ФУНКЦИИ БАЗЫ ДАННЫХ
-# ==================================================
-def get_cart(user_id):
-    cur.execute("SELECT cart FROM users WHERE user_id = ?", (user_id,))
-    result = cur.fetchone()
-    if result:
-        return eval(result[0])
-    return []
-
-def save_cart(user_id, cart):
-    cur.execute("UPDATE users SET cart = ? WHERE user_id = ?", (str(cart), user_id))
-    conn.commit()
-
-def add_to_cart(user_id, item):
-    cart = get_cart(user_id)
-    if len(cart) >= 25:
-        return False, "Корзина заполнена (максимум 25 товаров)"
-    if item in cart:
-        return False, "Этот товар уже в корзине"
-    cart.append(item)
-    save_cart(user_id, cart)
-    return True, f"{item} добавлен в корзину!"
-
-def remove_from_cart(user_id, index):
-    cart = get_cart(user_id)
-    if 1 <= index <= len(cart):
-        removed = cart.pop(index - 1)
-        save_cart(user_id, cart)
-        return True, f"{removed} удалён из корзины"
-    return False, "Неверный номер товара"
-
-def get_cart_total(cart):
-    total = 0
-    for item in cart:
-        total += PRICES.get(item, 0)
-    return total
-
-def get_user(user_id):
-    cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-
-# ==================================================
 # КЛАВИАТУРЫ
 # ==================================================
 def main_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="💰 Как оплатить заказ", callback_data="how_to_pay"))
-    builder.row(InlineKeyboardButton(text="💎 МАГАЗИН 🛍️", callback_data="shop"))
+    builder.row(InlineKeyboardButton(text="💰 Как оплатить", callback_data="how_to_pay"))
+    builder.row(InlineKeyboardButton(text="💎 МАГАЗИН", callback_data="shop"))
     builder.row(InlineKeyboardButton(text="💵 О магазине", callback_data="about"))
-    builder.row(InlineKeyboardButton(text="✍️ Написать поддержке", callback_data="support"))
+    builder.row(InlineKeyboardButton(text="✍️ Поддержка", callback_data="support"))
     builder.row(InlineKeyboardButton(text="🛒 КОРЗИНА", callback_data="cart"))
     return builder.as_markup()
 
 def shop_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🏹 СЕТЫ 🔪", callback_data="category_sets"))
-    builder.row(InlineKeyboardButton(text="📜 Ancients 🟪", callback_data="category_ancients"))
-    builder.row(InlineKeyboardButton(text="🌈 Chromas 🏳️‍🌈", callback_data="category_chromas"))
-    builder.row(InlineKeyboardButton(text="🌸 Godlies 🩷", callback_data="category_godlies"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    return builder.as_markup()
-
-def back_buttons():
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    return builder.as_markup()
-
-def back_next_buttons(page, total_pages, category):
-    builder = InlineKeyboardBuilder()
-    if page > 1:
-        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"category_{category}_page_{page-1}"))
-    if page < total_pages:
-        builder.row(InlineKeyboardButton(text="➡️ Следующая", callback_data=f"category_{category}_page_{page+1}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    return builder.as_markup()
-
-def item_buttons(item):
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{item}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_category"))
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    return builder.as_markup()
-
-def cart_buttons(cart):
-    builder = InlineKeyboardBuilder()
-    for i, item in enumerate(cart, 1):
-        builder.row(InlineKeyboardButton(text=f"❌ {i}. {item}", callback_data=f"del_{i}"))
-    builder.row(InlineKeyboardButton(text="✅ Оформить заказ", callback_data="checkout"))
+    builder.row(InlineKeyboardButton(text="🏹 СЕТЫ", callback_data="category_sets"))
+    builder.row(InlineKeyboardButton(text="📜 Ancients", callback_data="category_ancients"))
+    builder.row(InlineKeyboardButton(text="🌈 Chromas", callback_data="category_chromas"))
+    builder.row(InlineKeyboardButton(text="🌸 Godlies", callback_data="category_godlies"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
     return builder.as_markup()
 
 # ==================================================
-# ОБРАБОТЧИКИ КОМАНД
+# ОБРАБОТЧИКИ (с обработкой ошибок)
 # ==================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    user_id = message.from_user.id
-    get_user(user_id)
-    text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
+    try:
+        user_id = message.from_user.id
+        get_cart(user_id)
+        text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
 
 NOVASS SHOP 🛍️ ЗДЕСЬ МОЖНО
 КУПИТЬ КРУТЫЕ СКИНЫ 💎 ИЗ ИГРЫ
 🩸 MURDER MYSTERY 2 😎
 
 Чтобы посмотреть цены и другие вещи в нашем магазине нажмите на кнопки 👇"""
-    await message.answer(text, reply_markup=main_menu())
+        await message.answer(text, reply_markup=main_menu())
+    except Exception as e:
+        logging.error(f"Ошибка в /start: {e}")
+        await message.answer("Произошла ошибка, попробуйте позже")
 
-# ==================================================
-# ГЛАВНОЕ МЕНЮ
-# ==================================================
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(call: CallbackQuery):
-    text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
+    try:
+        text = """👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋
 
 NOVASS SHOP 🛍️ ЗДЕСЬ МОЖНО
 КУПИТЬ КРУТЫЕ СКИНЫ 💎 ИЗ ИГРЫ
 🩸 MURDER MYSTERY 2 😎
 
 Чтобы посмотреть цены и другие вещи в нашем магазине нажмите на кнопки 👇"""
-    await call.message.edit_text(text, reply_markup=main_menu())
-    await call.answer()
+        await call.message.edit_text(text, reply_markup=main_menu())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в main_menu: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # 1. КАК ОПЛАТИТЬ
 # ==================================================
 @dp.callback_query(F.data == "how_to_pay")
 async def how_to_pay(call: CallbackQuery):
-    text = """💳 Как оплатить заказ?
+    try:
+        text = """💳 Как оплатить заказ?
 
-Мы работаем по всему миру — без привязки к странам, банкам и дурацким картам.
-Покупать карты для каждой страны — дорого, геморройно и невыгодно.
+Мы принимаем два способа оплаты:
+💸 USDT (криптовалюта) через @send
+⭐ Telegram Stars через @PremiumBot
 
-Поэтому мы принимаем два надёжных способа оплаты:
-
-💸 USDT (криптовалюта)
-⭐ Telegram Stars
-
-Если у тебя пока нет ни крипты, ни звёзд — не переживай.
-Всё решается за 5–15 минут, даже если ты делаешь это впервые.
-
-1️⃣ СПОСОБ — КРИПТОВАЛЮТА (USDT)
-
-Самый быстрый и приватный способ.
-Покупай USDT через официальный бот Telegram — @send.
-Данные можно вводить любые, даже вымышленные — никто не проверяет.
-
-📱 Пошаговый туториал:
-
-1. Открой бота @send
-2. Нажми /start и пройди базовую настройку
-3. Снова нажми /start → появится кнопка P2P
-4. Нажми P2P → выбери «Оплата и валюта»
-5. Укажи валюту своей страны (например, 🇷🇺 Россия — Рубли)
-6. Нажми «Назад» — вернёшься в меню P2P
-7. Выбери «Купить» → укажи USDT (Tether)
-8. Выбери свой банк и подходящее предложение
-9. После покупки свяжись с продавцом — он объяснит детали обмена
-
-🧠 Альтернатива:
-Есть и другие магазины криптовалют — туториалы легко найти на YouTube.
-
-2️⃣ СПОСОБ — TELEGRAM STARS ⭐
-
-Если крипта — не твоё, используй Telegram Stars.
-Это встроенная валюта Telegram, которая работает в любой стране.
-
-📱 Пошаговый туториал:
-
-1. Открой бота @PremiumBot
-2. Нажми /start → увидишь синюю кнопку Menu
-3. Выбери Buy or Gift Telegram Stars → /stars
-4. Выбери нужную сумму (например, 100, 500, 1000 звёзд)
-5. Свяжись с владельцем сделки и сообщи, на какую сумму тебе нужны звёзды
-6. Дождись ответа (обычно от 5 до 30 минут)
-7. Когда продавец назовёт сумму — выбери «Подарить звёзды»
-8. Введи его юзернейм и отправь звёзды
-9. После этого начинается сделка ✅"""
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
+Подробные инструкции в боте @send и @PremiumBot."""
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+        await call.message.edit_text(text, reply_markup=builder.as_markup())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в how_to_pay: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # 2. МАГАЗИН
 # ==================================================
 @dp.callback_query(F.data == "shop")
 async def shop_callback(call: CallbackQuery):
-    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
-    await call.answer()
-
-@dp.callback_query(F.data == "back_to_shop")
-async def back_to_shop(call: CallbackQuery):
-    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
-    await call.answer()
+    try:
+        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в shop: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data.startswith("category_"))
 async def category_callback(call: CallbackQuery):
-    category = call.data.split("_")[1]
-    if "_page_" in call.data:
-        category = call.data.split("_")[1]
-        page = int(call.data.split("_")[3])
-    else:
-        page = 1
+    try:
+        parts = call.data.split("_")
+        category = parts[1]
+        page = int(parts[3]) if len(parts) > 3 else 1
 
-    items = CATEGORIES.get(category, [])
-    items_per_page = 15
-    total_pages = (len(items) + items_per_page - 1) // items_per_page
-    start = (page - 1) * items_per_page
-    end = start + items_per_page
-    page_items = items[start:end]
+        items = CATEGORIES.get(category, [])
+        items_per_page = 15
+        total_pages = (len(items) + items_per_page - 1) // items_per_page
+        start = (page - 1) * items_per_page
+        end = start + items_per_page
+        page_items = items[start:end]
 
-    if category == "sets":
-        title = "🏹 Выберите Сет оружия:"
-    elif category == "ancients":
-        title = "📜 Выберите Ancients Оружие:"
-    elif category == "chromas":
-        title = "🌈 Выберите Chroma Оружие:"
-    elif category == "godlies":
-        title = "🌸 Выберите Godly Оружие:"
-    else:
-        title = "Выберите оружие:"
+        titles = {"sets": "🏹 Сеты:", "ancients": "📜 Ancients:", "chromas": "🌈 Chromas:", "godlies": "🌸 Godlies:"}
+        title = titles.get(category, "Выберите:")
 
-    builder = InlineKeyboardBuilder()
-    for item in page_items:
-        builder.row(InlineKeyboardButton(text=f"{item} - {PRICES.get(item, 0)} руб", callback_data=f"view_{item}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    if total_pages > 1:
-        nav_row = []
-        if page > 1:
-            nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"category_{category}_page_{page-1}"))
-        nav_row.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
-        if page < total_pages:
-            nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"category_{category}_page_{page+1}"))
-        builder.row(*nav_row)
+        builder = InlineKeyboardBuilder()
+        for item in page_items:
+            builder.row(InlineKeyboardButton(text=f"{item} - {PRICES.get(item, 0)} руб", callback_data=f"view_{item}"))
+        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
+        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
 
-    await call.message.edit_text(title, reply_markup=builder.as_markup())
-    await call.answer()
+        if total_pages > 1:
+            nav = []
+            if page > 1: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"category_{category}_page_{page-1}"))
+            nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="ignore"))
+            if page < total_pages: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"category_{category}_page_{page+1}"))
+            builder.row(*nav)
+
+        await call.message.edit_text(title, reply_markup=builder.as_markup())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в category: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data.startswith("view_"))
-async def view_item(call: CallbackQuery, state: FSMContext):
-    item = call.data.replace("view_", "")
-    price = PRICES.get(item, 0)
-    text = f"""✅ Вы уверены, что хотите выбрать?
+async def view_item(call: CallbackQuery):
+    try:
+        item = call.data.replace("view_", "")
+        price = PRICES.get(item, 0)
+        text = f"""✅ Вы уверены, что хотите выбрать?
 
 Название: {item}
 Цена: {price} руб
-В наличии: 1 шт
-
-Выберите действие:"""
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{item}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_category"))
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
-
-@dp.callback_query(F.data == "back_to_category")
-async def back_to_category(call: CallbackQuery):
-    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=shop_menu())
-    await call.answer()
+В наличии: 1 шт"""
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{item}"))
+        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop"))
+        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
+        await call.message.edit_text(text, reply_markup=builder.as_markup())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в view_item: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # 3. О МАГАЗИНЕ
 # ==================================================
 @dp.callback_query(F.data == "about")
 async def about_callback(call: CallbackQuery):
-    text = """👋 Добро пожаловать в магазин NOVA SHOP MM2 🩸
+    try:
+        text = """👋 Добро пожаловать в NOVA SHOP MM2
 
-О нас:
-✅ Около 200-500 положительных отзывов
-⏱ Выдачи за 5-30 минут
-💰 Самые дешёвые цены на рынке оружий MM2"""
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
+✅ 200-500 положительных отзывов
+⏱ Выдача 5-30 минут
+💰 Самые дешёвые цены"""
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+        await call.message.edit_text(text, reply_markup=builder.as_markup())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в about: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # 4. ПОДДЕРЖКА
 # ==================================================
 @dp.callback_query(F.data == "support")
 async def support_callback(call: CallbackQuery):
-    text = """👋 Если у вас есть вопросы, возможные жалобы или баги в боте — можно написать поддержке (очень быстрый ответ)
+    try:
+        text = """✍️ Поддержка: @NovasHelper
 
-Поддержка: @NovasHelper ✍️"""
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
+Быстрый ответ на все вопросы."""
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+        await call.message.edit_text(text, reply_markup=builder.as_markup())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в support: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # 5. КОРЗИНА
 # ==================================================
 @dp.callback_query(F.data == "cart")
 async def cart_callback(call: CallbackQuery):
-    user_id = call.from_user.id
-    cart = get_cart(user_id)
-    if not cart:
-        text = "🛒 Ваша корзина пуста"
+    try:
+        user_id = call.from_user.id
+        cart = get_cart(user_id)
+        if not cart:
+            text = "🛒 Ваша корзина пуста"
+            builder = InlineKeyboardBuilder()
+            builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
+            await call.message.edit_text(text, reply_markup=builder.as_markup())
+            await call.answer()
+            return
+
+        text = "🛒 КОРЗИНА (лимит 25)\n\n"
+        total = 0
+        for i, item in enumerate(cart, 1):
+            price = PRICES.get(item, 0)
+            total += price
+            text += f"{i}. {item} - {price} руб\n"
+        text += f"\n💰 ИТОГО: {total} руб"
+
         builder = InlineKeyboardBuilder()
+        for i in range(1, min(len(cart) + 1, 26)):
+            builder.row(InlineKeyboardButton(text=f"❌ Удалить {i}", callback_data=f"del_{i}"))
+        builder.row(InlineKeyboardButton(text="✅ Оформить", callback_data="checkout"))
+        builder.row(InlineKeyboardButton(text="🔄 Очистить", callback_data="clear_cart"))
         builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
         await call.message.edit_text(text, reply_markup=builder.as_markup())
         await call.answer()
-        return
-
-    text = "🛒 КОРЗИНА (лимит 25 товаров)\n\n"
-    total = 0
-    for i, item in enumerate(cart, 1):
-        price = PRICES.get(item, 0)
-        total += price
-        text += f"{i}. {item} - {price} руб\n"
-    text += f"\n💰 ИТОГО: {total} руб"
-
-    builder = InlineKeyboardBuilder()
-    for i in range(1, min(len(cart) + 1, 26)):
-        builder.row(InlineKeyboardButton(text=f"❌ Удалить {i}", callback_data=f"del_{i}"))
-    builder.row(InlineKeyboardButton(text="✅ Оформить заказ", callback_data="checkout"))
-    builder.row(InlineKeyboardButton(text="🔄 Очистить корзину", callback_data="clear_cart"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в cart: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data.startswith("add_"))
 async def add_to_cart_callback(call: CallbackQuery):
-    user_id = call.from_user.id
-    item = call.data.replace("add_", "")
-    success, msg = add_to_cart(user_id, item)
-    await call.answer(msg, show_alert=True)
-    if success:
-        await back_to_category(call)
+    try:
+        user_id = call.from_user.id
+        item = call.data.replace("add_", "")
+        success, msg = add_to_cart(user_id, item)
+        await call.answer(msg, show_alert=True)
+        if success:
+            await shop_callback(call)
+    except Exception as e:
+        logging.error(f"Ошибка в add_to_cart: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data.startswith("del_"))
 async def remove_from_cart_callback(call: CallbackQuery):
-    user_id = call.from_user.id
-    index = int(call.data.replace("del_", ""))
-    success, msg = remove_from_cart(user_id, index)
-    await call.answer(msg, show_alert=True)
-    await cart_callback(call)
+    try:
+        user_id = call.from_user.id
+        index = int(call.data.replace("del_", ""))
+        success, msg = remove_from_cart(user_id, index)
+        await call.answer(msg, show_alert=True)
+        await cart_callback(call)
+    except Exception as e:
+        logging.error(f"Ошибка в remove_from_cart: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data == "clear_cart")
 async def clear_cart_callback(call: CallbackQuery):
-    user_id = call.from_user.id
-    save_cart(user_id, [])
-    await call.answer("Корзина очищена", show_alert=True)
-    await cart_callback(call)
+    try:
+        user_id = call.from_user.id
+        save_cart(user_id, [])
+        await call.answer("Корзина очищена", show_alert=True)
+        await cart_callback(call)
+    except Exception as e:
+        logging.error(f"Ошибка в clear_cart: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data == "checkout")
 async def checkout_callback(call: CallbackQuery):
-    user_id = call.from_user.id
-    cart = get_cart(user_id)
-    if not cart:
-        await call.answer("Корзина пуста", show_alert=True)
-        return
+    try:
+        user_id = call.from_user.id
+        cart = get_cart(user_id)
+        if not cart:
+            await call.answer("Корзина пуста", show_alert=True)
+            return
 
-    total = get_cart_total(cart)
-    items_text = "\n".join([f"{i+1}. {item} - {PRICES.get(item, 0)} руб" for i, item in enumerate(cart)])
+        total = get_cart_total(cart)
+        items_text = "\n".join([f"{i+1}. {item} - {PRICES.get(item, 0)} руб" for i, item in enumerate(cart)])
 
-    cur.execute("""
-        INSERT INTO orders (user_id, items, total, created_at)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, str(cart), total, datetime.now().isoformat()))
-    conn.commit()
-    order_id = cur.lastrowid
+        cur.execute("""INSERT INTO orders (user_id, items, total, created_at) VALUES (?, ?, ?, ?)""",
+                    (user_id, str(cart), total, datetime.now().isoformat()))
+        conn.commit()
+        order_id = cur.lastrowid
 
-    text = f"""✅ ЗАКАЗ #{order_id} ОФОРМЛЕН!
+        text = f"""✅ ЗАКАЗ #{order_id} ОФОРМЛЕН!
 
 Ваши товары:
 {items_text}
 
 💰 ИТОГО: {total} руб
 
-💳 Для оплаты используйте способы из раздела «Как оплатить заказ»
+💳 Оплата: USDT или Stars (см. «Как оплатить»)
 
-⏱ Ожидайте выдачи (5-30 минут)
+⏱ Выдача 5-30 минут
 
-📩 Свяжитесь с продавцом: @goIanrexxx"""
+📩 Связь: @goIanrexxx"""
 
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-    await call.answer()
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🏠 В главное", callback_data="main_menu"))
+        await call.message.edit_text(text, reply_markup=builder.as_markup())
+        await call.answer()
 
-    for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, f"🆕 НОВЫЙ ЗАКАЗ #{order_id}\nПользователь: {call.from_user.id}\nТовары: {items_text}\nИтого: {total} руб")
+        for admin_id in ADMIN_IDS:
+            await bot.send_message(admin_id, f"🆕 ЗАКАЗ #{order_id}\nUser: {call.from_user.id}\n{items_text}\nИтого: {total} руб")
 
-    save_cart(user_id, [])
+        save_cart(user_id, [])
+    except Exception as e:
+        logging.error(f"Ошибка в checkout: {e}")
+        await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
 # АДМИН-КОМАНДЫ
 # ==================================================
 @dp.message(Command("orders"))
 async def cmd_orders(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    cur.execute("SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC")
-    orders = cur.fetchall()
-    if not orders:
-        await message.answer("Нет активных заказов")
-        return
-    text = "📋 АКТИВНЫЕ ЗАКАЗЫ:\n\n"
-    for order in orders:
-        order_id, user_id, items, total, status, created = order
-        text += f"#{order_id} | {user_id} | {total} руб | {created[:16]}\n"
-    await message.answer(text)
+    try:
+        if message.from_user.id not in ADMIN_IDS:
+            await message.answer("⛔ Нет прав")
+            return
+        cur.execute("SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC")
+        orders = cur.fetchall()
+        if not orders:
+            await message.answer("Нет активных заказов")
+            return
+        text = "📋 АКТИВНЫЕ ЗАКАЗЫ:\n\n"
+        for order in orders:
+            order_id, user_id, items, total, status, created = order
+            text += f"#{order_id} | {user_id} | {total} руб | {created[:16]}\n"
+        await message.answer(text)
+    except Exception as e:
+        logging.error(f"Ошибка в orders: {e}")
+        await message.answer("Ошибка при получении заказов")
 
 @dp.message(Command("done"))
 async def cmd_done(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Нет прав")
-        return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Используйте: /done <order_id>")
-        return
-    order_id = args[1]
-    cur.execute("UPDATE orders SET status = 'completed' WHERE order_id = ?", (order_id,))
-    conn.commit()
-    await message.answer(f"✅ Заказ #{order_id} выполнен")
+    try:
+        if message.from_user.id not in ADMIN_IDS:
+            await message.answer("⛔ Нет прав")
+            return
+        args = message.text.split()
+        if len(args) < 2:
+            await message.answer("Используйте: /done <order_id>")
+            return
+        order_id = args[1]
+        cur.execute("UPDATE orders SET status = 'completed' WHERE order_id = ?", (order_id,))
+        conn.commit()
+        await message.answer(f"✅ Заказ #{order_id} выполнен")
+    except Exception as e:
+        logging.error(f"Ошибка в done: {e}")
+        await message.answer("Ошибка при выполнении заказа")
 
 # ==================================================
-# ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT
-# ==================================================
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', lambda request: web.Response(text="welcome to uptimerobot"))
-    app.router.add_get('/ping', lambda request: web.Response(text="welcome to uptimerobot"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
-    await site.start()
-    logging.info(f"Web server started on port {PORT}")
-    await asyncio.Event().wait()
-
-# ==================================================
-# ЗАПУСК
-# ==================================================
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот запущен!")
-    await asyncio.gather(
-        dp.start_polling(bot),
-        start_web_server()
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# ВЕБ-СЕРВЕР (UptimeRobot)
+# =======================

@@ -1,35 +1,29 @@
+import asyncio
 import logging
 import sqlite3
 import time
-from typing import Dict, List, Any
 import os
-
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.webhook.aiohttp import SimpleRequestHandler, setup_application
 
 # ==================================================
 # КОНФИГУРАЦИЯ
 # ==================================================
 BOT_TOKEN = "7946724552:AAGbTOLi_6E3cYHvvfH-PtK9Nk_7qZgSnYU"
-# ВАЖНО: ЗАМЕНИ НА СВОЙ URL
-RENDER_EXTERNAL_URL = "https://bot-py-lh8h.onrender.com"  # <--- СВОЙ URL
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
-
 ADMIN_ID = 8625870625
 SELLER_USERNAME = "@goIanrexxx"
 SUPPORT_USERNAME = "@NovasHelper"
+PORT = int(os.environ.get("PORT", 10000))
 
 logging.basicConfig(level=logging.INFO)
 
 # ==================================================
-# БАЗА ДАННЫХ И ТОВАРЫ (сокращённо, но полный список)
+# БАЗА ДАННЫХ И КЕШ
 # ==================================================
-cart_cache: Dict[int, List[Dict[str, Any]]] = {}
+cart_cache = {}
 
 def init_db():
     conn = sqlite3.connect("shop.db", timeout=10)
@@ -82,6 +76,9 @@ def mark_order_done(order_id: int) -> bool:
     conn.close()
     return True
 
+# ==================================================
+# ТОВАРЫ
+# ==================================================
 PRODUCTS = {
     "sets": [
         ("Celestial Set", 1650), ("Alien set", 1450), ("Sakura set", 1250), ("Sun set", 1200),
@@ -202,7 +199,7 @@ def get_cart_kb(user_id: int):
     return builder.as_markup()
 
 # ==================================================
-# ТЕКСТЫ (полные, как в коде выше)
+# ТЕКСТЫ
 # ==================================================
 START_TEXT = (
     "👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋\n"
@@ -259,6 +256,22 @@ ABOUT_TEXT = (
 SUPPORT_TEXT = f"✍️ Поддержка: {SUPPORT_USERNAME}\nБыстрый ответ на все вопросы."
 
 # ==================================================
+# ВЕБ-СЕРВЕР (ДЛЯ UPTIMEROBOT)
+# ==================================================
+async def handle_ping(request):
+    return web.Response(text="OK", status=200)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Веб-сервер запущен на порту {PORT}")
+
+# ==================================================
 # ХЕНДЛЕРЫ
 # ==================================================
 bot = Bot(token=BOT_TOKEN)
@@ -297,192 +310,20 @@ async def cmd_done(message: types.Message):
     else:
         await message.answer(f"❌ Заказ #{order_id} не найден или уже выполнен.")
 
-@dp.callback_query(F.data == "main_menu")
-async def cb_main_menu(call: types.CallbackQuery):
-    await call.message.edit_text(START_TEXT, reply_markup=get_main_menu_kb())
-    await call.answer()
-
-@dp.callback_query(F.data == "how_to_pay")
-async def cb_how_to_pay(call: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔙 Назад", callback_data="main_menu")
-    await call.message.edit_text(HOW_TO_PAY_TEXT, reply_markup=builder.as_markup())
-    await call.answer()
-
-@dp.callback_query(F.data == "about_shop")
-async def cb_about_shop(call: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔙 Назад", callback_data="main_menu")
-    await call.message.edit_text(ABOUT_TEXT, reply_markup=builder.as_markup())
-    await call.answer()
-
-@dp.callback_query(F.data == "support")
-async def cb_support(call: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔙 Назад", callback_data="main_menu")
-    await call.message.edit_text(SUPPORT_TEXT, reply_markup=builder.as_markup())
-    await call.answer()
-
-@dp.callback_query(F.data == "shop_menu")
-async def cb_shop_menu(call: types.CallbackQuery):
-    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=get_shop_categories_kb())
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("cat_"))
-async def cb_category(call: types.CallbackQuery):
-    cat = call.data.replace("cat_", "")
-    if cat.startswith("godlies_page_"):
-        page = int(cat.split("_")[-1])
-        await call.message.edit_text(f"🌸 Godlies (Страница {page}):", reply_markup=get_godlies_page_kb(page))
-    else:
-        titles = {"sets": "🏹 СЕТЫ", "ancients": "📜 Ancients", "chromas": "🌈 Chromas"}
-        title = titles.get(cat, "Товары")
-        await call.message.edit_text(f"Вы выбрали категорию: {title}", reply_markup=get_category_items_kb(cat))
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("buy_"))
-async def cb_buy_item(call: types.CallbackQuery):
-    item_name = call.data.replace("buy_", "")
-    price = ALL_PRODUCTS.get(item_name, 0)
-    
-    text = (
-        f"✅ Вы уверены, что хотите выбрать?\n"
-        f"Название: {item_name}\n"
-        f"Цена: {price} руб\n"
-        f"В наличии: 1 шт"
-    )
-    await call.message.edit_text(text, reply_markup=get_item_confirm_kb(item_name))
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("addcart_"))
-async def cb_add_to_cart(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    item_name = call.data.replace("addcart_", "")
-    price = ALL_PRODUCTS.get(item_name, 0)
-    
-    if user_id not in cart_cache:
-        cart_cache[user_id] = []
-        
-    if len(cart_cache[user_id]) >= 25:
-        await call.answer("❌ В корзине может быть не более 25 товаров!", show_alert=True)
-        return
-        
-    cart_cache[user_id].append({"name": item_name, "price": price})
-    await call.answer(f"🛒 {item_name} добавлен в корзину!", show_alert=True)
-    await call.message.edit_text("🛍️ Выберите тип оружия (Редкость):", reply_markup=get_shop_categories_kb())
-
-@dp.callback_query(F.data == "view_cart")
-async def cb_view_cart(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_cart = cart_cache.get(user_id, [])
-    
-    if not user_cart:
-        text = "🛒 Ваша корзина пуста."
-    else:
-        text = "🛒 **ВАША КОРЗИНА:**\n\n"
-        total = 0
-        for idx, item in enumerate(user_cart, 1):
-            text += f"{idx}. {item['name']} — {item['price']} руб\n"
-            total += item['price']
-        text += f"\n💰 **Итого:** {total} руб"
-        
-    await call.message.edit_text(text, reply_markup=get_cart_kb(user_id), parse_mode="Markdown")
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("remove_item_"))
-async def cb_remove_item(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    idx_str = call.data.replace("remove_item_", "")
-    
-    if idx_str.isdigit():
-        idx = int(idx_str)
-        user_cart = cart_cache.get(user_id, [])
-        if user_cart and 0 <= idx < len(user_cart):
-            removed = user_cart.pop(idx)
-            await call.answer(f"Удалено: {removed['name']}")
-            
-    await cb_view_cart(call)
-
-@dp.callback_query(F.data == "clear_cart")
-async def cb_clear_cart(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    cart_cache[user_id] = []
-    await call.answer("Корзина очищена!")
-    await cb_view_cart(call)
-
-@dp.callback_query(F.data == "checkout")
-async def cb_checkout(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_cart = cart_cache.get(user_id, [])
-    
-    if not user_cart:
-        await call.answer("❌ Корзина пуста!", show_alert=True)
-        return
-        
-    total = sum(item['price'] for item in user_cart)
-    items_str = "\n".join([f"• {item['name']} ({item['price']} руб)" for item in user_cart])
-    
-    order_id = save_order_to_db(user_id, items_str, total)
-    
-    user_text = (
-        f"✅ ЗАКАЗ #{order_id} ОФОРМЛЕН!\n\n"
-        f"Ваши товары:\n{items_str}\n\n"
-        f"💰 ИТОГО: {total} руб\n"
-        f"💳 Для оплаты используйте способы из раздела «Как оплатить заказ»\n"
-        f"⏱ Ожидайте выдачи (5-30 минут)\n"
-        f"📩 Свяжитесь с продавцом: {SELLER_USERNAME}"
-    )
-    
-    cart_cache[user_id] = []
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🏠 В главное меню", callback_data="main_menu")
-    await call.message.edit_text(user_text, reply_markup=builder.as_markup())
-    await call.answer()
-    
-    admin_text = (
-        f"🔔 **НОВЫЙ ЗАКАЗ #{order_id}**\n"
-        f"👤 Покупатель: `{user_id}` (@{call.from_user.username or 'без_юзернейма'})\n\n"
-        f"🛍️ **Товары:**\n{items_str}\n\n"
-        f"💰 **Сумма:** {total} руб"
-    )
-    try:
-        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
-    except Exception:
-        logging.warning("Не удалось отправить сообщение администратору (чат не найден).")
-
 # ==================================================
-# НАСТРОЙКА WEBHOOK
+# ЗАПУСК (ПОЛЛИНГ + ВЕБ-СЕРВЕР)
 # ==================================================
-async def on_startup(bot: Bot):
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-    logging.info(f"Webhook установлен на {WEBHOOK_URL}")
-
-async def handle_ping(request):
-    return web.Response(text="OK", status=200)
-
-# ==================================================
-# ЗАПУСК
-# ==================================================
-def main():
-    logging.basicConfig(level=logging.INFO)
+async def main():
     init_db()
-
-    dp.startup.register(on_startup)
-
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/ping", handle_ping)
-
-    # Регистрация обработчика Webhook от aiogram
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-
-    setup_application(app, dp, bot=bot)
-
-    # Render передает порт в переменной окружения PORT (по умолчанию 10000)
-    port = int(os.getenv("PORT", 10000))
-    web.run_app(app, host="0.0.0.0", port=port)
+    
+    # Запускаем веб-сервер в фоне
+    asyncio.create_task(start_web_server())
+    
+    # Удаляем вебхук при старте
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    logging.info("Запуск Telegram-бота...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

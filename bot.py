@@ -1,30 +1,30 @@
-import os
 import asyncio
 import logging
 import sqlite3
 import time
-from typing import Dict, List, Any
-
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest, TelegramConflictError
+from aiogram.exceptions import TelegramBadRequest
 
 # ==================================================
-# КОНФИГУРАЦИЯ (ТВОЙ ТОКЕН ВСТАВЛЕН)
+# КОНФИГУРАЦИЯ
 # ==================================================
 BOT_TOKEN = "7946724552:AAGbTOLi_6E3cYHvvfH-PtK9Nk_7qZgSnYU"
-ADMIN_ID = 8625870625  # ТВОЙ ID
+ADMIN_ID = 8625870625
 SELLER_USERNAME = "@goIanrexxx"
 SUPPORT_USERNAME = "@NovasHelper"
+PORT = int(os.environ.get("PORT", 10000))
 
 logging.basicConfig(level=logging.INFO)
 
 # ==================================================
-# КЕШ И БАЗА ДАННЫХ
+# БАЗА ДАННЫХ И КЕШ
 # ==================================================
-cart_cache: Dict[int, List[Dict[str, Any]]] = {}
+cart_cache = {}
 
 def init_db():
     conn = sqlite3.connect("shop.db", timeout=10)
@@ -83,7 +83,7 @@ def mark_order_done(order_id: int) -> bool:
     return True
 
 # ==================================================
-# БАЗА ТОВАРОВ
+# ТОВАРЫ
 # ==================================================
 PRODUCTS = {
     "sets": [
@@ -127,7 +127,7 @@ for cat, items in PRODUCTS.items():
 # ==================================================
 # КЛАВИАТУРЫ
 # ==================================================
-def get_main_menu_kb() -> InlineKeyboardMarkup:
+def get_main_menu_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="💰 Как оплатить", callback_data="how_to_pay")
     builder.button(text="💎 МАГАЗИН", callback_data="shop_menu")
@@ -137,7 +137,7 @@ def get_main_menu_kb() -> InlineKeyboardMarkup:
     builder.adjust(1, 1, 2, 1)
     return builder.as_markup()
 
-def get_shop_categories_kb() -> InlineKeyboardMarkup:
+def get_shop_categories_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="🏹 СЕТЫ", callback_data="cat_sets")
     builder.button(text="📜 Ancients", callback_data="cat_ancients")
@@ -147,7 +147,7 @@ def get_shop_categories_kb() -> InlineKeyboardMarkup:
     builder.adjust(2, 2, 1)
     return builder.as_markup()
 
-def get_godlies_page_kb(page: int) -> InlineKeyboardMarkup:
+def get_godlies_page_kb(page: int):
     builder = InlineKeyboardBuilder()
     godlies = PRODUCTS["godlies"]
     per_page = 15
@@ -172,7 +172,7 @@ def get_godlies_page_kb(page: int) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🔙 К категориям", callback_data="shop_menu"))
     return builder.as_markup()
 
-def get_category_items_kb(cat_key: str) -> InlineKeyboardMarkup:
+def get_category_items_kb(cat_key: str):
     builder = InlineKeyboardBuilder()
     items = PRODUCTS[cat_key]
     for name, price in items:
@@ -181,7 +181,7 @@ def get_category_items_kb(cat_key: str) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🔙 К категориям", callback_data="shop_menu"))
     return builder.as_markup()
 
-def get_item_confirm_kb(item_name: str) -> InlineKeyboardMarkup:
+def get_item_confirm_kb(item_name: str):
     builder = InlineKeyboardBuilder()
     builder.button(text="🛒 Добавить в корзину", callback_data=f"addcart_{item_name}")
     builder.button(text="🔙 Назад", callback_data="shop_menu")
@@ -189,7 +189,7 @@ def get_item_confirm_kb(item_name: str) -> InlineKeyboardMarkup:
     builder.adjust(1, 2)
     return builder.as_markup()
 
-def get_cart_kb(user_id: int) -> InlineKeyboardMarkup:
+def get_cart_kb(user_id: int):
     builder = InlineKeyboardBuilder()
     user_cart = cart_cache.get(user_id, [])
     
@@ -262,14 +262,27 @@ ABOUT_TEXT = (
 SUPPORT_TEXT = f"✍️ Поддержка: {SUPPORT_USERNAME}\nБыстрый ответ на все вопросы."
 
 # ==================================================
-# ДИСПЕТЧЕР И БОТ
+# ВЕБ-СЕРВЕР (ДЛЯ UPTIMEROBOT)
 # ==================================================
-dp = Dispatcher()
-bot = Bot(token=BOT_TOKEN)
+async def handle_ping(request):
+    return web.Response(text="OK", status=200)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Веб-сервер запущен на порту {PORT}")
 
 # ==================================================
 # ХЕНДЛЕРЫ
 # ==================================================
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(START_TEXT, reply_markup=get_main_menu_kb())
@@ -458,13 +471,24 @@ async def cb_checkout(call: types.CallbackQuery):
         logging.warning("Не удалось отправить сообщение администратору (чат не найден).")
 
 # ==================================================
-# ЗАПУСК (БЕЗ while True)
+# ЗАПУСК (БЕЗ while True, С ВЕБ-СЕРВЕРОМ)
 # ==================================================
 async def main():
+    logging.basicConfig(level=logging.INFO)
     init_db()
+    
+    # 1. Запускаем фоновый веб-сервер aiohttp для UptimeRobot
+    asyncio.create_task(start_web_server())
+    
+    # 2. Сбрасываем незавершенные вебхуки и зависшие сообщения
     await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Бот запущен!")
-    await dp.start_polling(bot)
+    
+    # 3. Запускаем поллинг БЕЗ while True
+    try:
+        logging.info("Запуск Telegram-бота...")
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

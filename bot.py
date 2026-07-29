@@ -13,20 +13,19 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 # ==================================================
-# НАСТРОЙКИ (оптимизированные)
+# НАСТРОЙКИ
 # ==================================================
 BOT_TOKEN = "8800653190:AAEEqe2c-72684E-5EmIgFSS1WdbGGSsukE"
 ADMIN_IDS = [8625870625]
 PORT = int(os.environ.get("PORT", 8080))
 
-# Отключаем ненужные логи для экономии памяти
 logging.basicConfig(level=logging.WARNING)
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 # ==================================================
-# БАЗА ДАННЫХ (с защитой от блокировок)
+# БАЗА ДАННЫХ
 # ==================================================
 conn = sqlite3.connect("shop.db", check_same_thread=False, timeout=10)
 cur = conn.cursor()
@@ -52,12 +51,11 @@ CREATE TABLE IF NOT EXISTS orders (
 conn.commit()
 
 # ==================================================
-# КЕШ КОРЗИН (чтобы не ходить в БД каждый раз)
+# КЕШ КОРЗИН
 # ==================================================
 cart_cache = {}
 
 def get_cart(user_id):
-    """Получить корзину пользователя (с кешем)"""
     if user_id in cart_cache:
         return cart_cache[user_id]
     try:
@@ -76,7 +74,6 @@ def get_cart(user_id):
         return []
 
 def save_cart(user_id, cart):
-    """Сохранить корзину пользователя"""
     cart_cache[user_id] = cart
     try:
         cur.execute("UPDATE users SET cart = ? WHERE user_id = ?", (str(cart), user_id))
@@ -85,7 +82,6 @@ def save_cart(user_id, cart):
         logging.error(f"Ошибка сохранения корзины: {e}")
 
 def add_to_cart(user_id, item):
-    """Добавить товар в корзину"""
     cart = get_cart(user_id)
     if len(cart) >= 25:
         return False, "Корзина заполнена (максимум 25 товаров)"
@@ -96,7 +92,6 @@ def add_to_cart(user_id, item):
     return True, f"{item} добавлен в корзину!"
 
 def remove_from_cart(user_id, index):
-    """Удалить товар из корзины по номеру"""
     cart = get_cart(user_id)
     if 1 <= index <= len(cart):
         removed = cart.pop(index - 1)
@@ -105,7 +100,6 @@ def remove_from_cart(user_id, index):
     return False, "Неверный номер товара"
 
 def get_cart_total(cart):
-    """Подсчитать общую стоимость корзины"""
     return sum(PRICES.get(item, 0) for item in cart)
 
 # ==================================================
@@ -180,8 +174,7 @@ def shop_menu():
     builder.row(InlineKeyboardButton(text="🌸 Godlies", callback_data="category_godlies"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
     return builder.as_markup()
-
-# ==================================================
+    # ==================================================
 # ОБРАБОТЧИКИ (с обработкой ошибок)
 # ==================================================
 @dp.message(Command("start"))
@@ -250,6 +243,15 @@ async def shop_callback(call: CallbackQuery):
         logging.error(f"Ошибка в shop: {e}")
         await call.answer("Ошибка", show_alert=True)
 
+@dp.callback_query(F.data == "back_to_shop")
+async def back_to_shop(call: CallbackQuery):
+    try:
+        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в back_to_shop: {e}")
+        await call.answer("Ошибка", show_alert=True)
+
 @dp.callback_query(F.data.startswith("category_"))
 async def category_callback(call: CallbackQuery):
     try:
@@ -304,6 +306,15 @@ async def view_item(call: CallbackQuery):
         await call.answer()
     except Exception as e:
         logging.error(f"Ошибка в view_item: {e}")
+        await call.answer("Ошибка", show_alert=True)
+
+@dp.callback_query(F.data == "back_to_category")
+async def back_to_category(call: CallbackQuery):
+    try:
+        await call.message.edit_text("🛍️ Выберите тип оружия:", reply_markup=shop_menu())
+        await call.answer()
+    except Exception as e:
+        logging.error(f"Ошибка в back_to_category: {e}")
         await call.answer("Ошибка", show_alert=True)
 
 # ==================================================
@@ -500,4 +511,32 @@ async def cmd_done(message: Message):
 
 # ==================================================
 # ВЕБ-СЕРВЕР (UptimeRobot)
-# =======================
+# ==================================================
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', lambda request: web.Response(text="OK"))
+    app.router.add_get('/ping', lambda request: web.Response(text="OK"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
+    await site.start()
+    await asyncio.Event().wait()
+
+# ==================================================
+# ЗАПУСК (с авто-перезапуском)
+# ==================================================
+async def main():
+    logging.basicConfig(level=logging.WARNING)
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.gather(
+                dp.start_polling(bot),
+                start_web_server()
+            )
+        except Exception as e:
+            logging.error(f"Бот упал: {e}. Перезапуск через 5 секунд...")
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    asyncio.run(main())

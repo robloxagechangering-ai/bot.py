@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ==================================================
 # НАСТРОЙКИ
 # ==================================================
-BOT_TOKEN = "7946724552:AAHLQfvrJxw5QFjlEB3XFRPUoBD9_0gT2rw"
+BOT_TOKEN = "7946724552:AAHLQfvrJxw5QFjIEB3XFRPUoBD9_0gT2rw"  # ← твой токен (лучше вынести в ENV)
 ADMIN_IDS = [8625870625]
 PORT = int(os.environ.get("PORT", 8080))
 
@@ -450,6 +450,13 @@ async def checkout_callback(call: CallbackQuery):
     save_cart(user_id, [])
 
 # ==================================================
+# ОБРАБОТЧИК ДЛЯ ПАГИНАЦИИ (ignore)
+# ==================================================
+@dp.callback_query(F.data == "ignore")
+async def ignore_callback(call: CallbackQuery):
+    await call.answer()
+
+# ==================================================
 # АДМИН-КОМАНДЫ
 # ==================================================
 @dp.message(Command("orders"))
@@ -493,19 +500,23 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
     await site.start()
-    await asyncio.Event().wait()
+    logging.info(f"Веб-сервер запущен на порту {PORT}")
+    # Держим веб-сервер активным
+    while True:
+        await asyncio.sleep(60)
 
 # ==================================================
 # ЗАПУСК (с авто-перезапуском)
 # ==================================================
 async def main():
+    # Запускаем веб-сервер в фоне
+    web_task = asyncio.create_task(start_web_server())
+    
+    # Запускаем бота с перезапуском при ошибках
     while True:
         try:
             await bot.delete_webhook(drop_pending_updates=True)
-            await asyncio.gather(
-                dp.start_polling(bot),
-                start_web_server()
-            )
+            await dp.start_polling(bot)
         except Exception as e:
             logging.error(f"Бот упал: {e}. Перезапуск через 5 секунд...")
             await asyncio.sleep(5)

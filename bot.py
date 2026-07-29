@@ -15,7 +15,7 @@ from aiohttp import web
 # ==================================================
 # НАСТРОЙКИ
 # ==================================================
-BOT_TOKEN = "8800653190:AAHxE9Wh6tnvXvXSHGUdHs9SAPZdCkbqPFA"
+BOT_TOKEN = "8816790244:AAHI3iLo448aPivteWHHrnk09gqE56mubhA"
 ADMIN_IDS = [8625870625]
 PORT = int(os.environ.get("PORT", 8080))
 

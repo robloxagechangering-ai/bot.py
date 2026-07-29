@@ -1,40 +1,40 @@
-import asyncio
 import logging
 import sqlite3
 import time
+from typing import Dict, List, Any
 import os
+
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.webhook.aiohttp import SimpleRequestHandler, setup_application
 
 # ==================================================
 # КОНФИГУРАЦИЯ
 # ==================================================
 BOT_TOKEN = "7946724552:AAGbTOLi_6E3cYHvvfH-PtK9Nk_7qZgSnYU"
+# ВАЖНО: ЗАМЕНИ НА СВОЙ URL
+RENDER_EXTERNAL_URL = "https://bot-py-lh8h.onrender.com"  # <--- СВОЙ URL
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+
 ADMIN_ID = 8625870625
 SELLER_USERNAME = "@goIanrexxx"
 SUPPORT_USERNAME = "@NovasHelper"
-PORT = int(os.environ.get("PORT", 10000))
 
 logging.basicConfig(level=logging.INFO)
 
 # ==================================================
-# БАЗА ДАННЫХ И КЕШ
+# БАЗА ДАННЫХ И ТОВАРЫ (сокращённо, но полный список)
 # ==================================================
-cart_cache = {}
+cart_cache: Dict[int, List[Dict[str, Any]]] = {}
 
 def init_db():
     conn = sqlite3.connect("shop.db", timeout=10)
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            cart TEXT
-        )
-    """)
+    cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, cart TEXT)")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             order_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,9 +82,6 @@ def mark_order_done(order_id: int) -> bool:
     conn.close()
     return True
 
-# ==================================================
-# ТОВАРЫ
-# ==================================================
 PRODUCTS = {
     "sets": [
         ("Celestial Set", 1650), ("Alien set", 1450), ("Sakura set", 1250), ("Sun set", 1200),
@@ -205,7 +202,7 @@ def get_cart_kb(user_id: int):
     return builder.as_markup()
 
 # ==================================================
-# ТЕКСТЫ
+# ТЕКСТЫ (полные, как в коде выше)
 # ==================================================
 START_TEXT = (
     "👋 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН 👋\n"
@@ -260,22 +257,6 @@ ABOUT_TEXT = (
 )
 
 SUPPORT_TEXT = f"✍️ Поддержка: {SUPPORT_USERNAME}\nБыстрый ответ на все вопросы."
-
-# ==================================================
-# ВЕБ-СЕРВЕР (ДЛЯ UPTIMEROBOT)
-# ==================================================
-async def handle_ping(request):
-    return web.Response(text="OK", status=200)
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/ping", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logging.info(f"Веб-сервер запущен на порту {PORT}")
 
 # ==================================================
 # ХЕНДЛЕРЫ
@@ -467,28 +448,41 @@ async def cb_checkout(call: types.CallbackQuery):
     )
     try:
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
-    except TelegramBadRequest:
+    except Exception:
         logging.warning("Не удалось отправить сообщение администратору (чат не найден).")
 
 # ==================================================
-# ЗАПУСК (БЕЗ while True, С ВЕБ-СЕРВЕРОМ)
+# НАСТРОЙКА WEBHOOK
 # ==================================================
-async def main():
+async def on_startup(bot: Bot):
+    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    logging.info(f"Webhook установлен на {WEBHOOK_URL}")
+
+async def handle_ping(request):
+    return web.Response(text="OK", status=200)
+
+# ==================================================
+# ЗАПУСК
+# ==================================================
+def main():
     logging.basicConfig(level=logging.INFO)
     init_db()
-    
-    # 1. Запускаем фоновый веб-сервер aiohttp для UptimeRobot
-    asyncio.create_task(start_web_server())
-    
-    # 2. Сбрасываем незавершенные вебхуки и зависшие сообщения
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # 3. Запускаем поллинг БЕЗ while True
-    try:
-        logging.info("Запуск Telegram-бота...")
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+
+    dp.startup.register(on_startup)
+
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+
+    # Регистрация обработчика Webhook от aiogram
+    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+
+    setup_application(app, dp, bot=bot)
+
+    # Render передает порт в переменной окружения PORT (по умолчанию 10000)
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

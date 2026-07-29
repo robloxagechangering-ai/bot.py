@@ -2,11 +2,13 @@ import os
 import asyncio
 import logging
 import sqlite3
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder  # ЭТО БЫЛО ПРОПУЩЕНО
 
 # ==================================================
 # НАСТРОЙКИ
